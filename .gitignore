@@ -1,0 +1,5 @@
+# Sensitive / server-specific files (do not commit to GitHub)
+server.txt
+sample-auth.log
+DEPLOY.md
+.DS_Store
