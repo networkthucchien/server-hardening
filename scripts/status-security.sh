@@ -20,7 +20,7 @@ echo
 echo "================ 3. FIREWALL COUNTERS ============"
 if [[ -f /etc/vn-firewall/config.env ]]; then
     echo "--- Config (/etc/vn-firewall/config.env) ---"
-    grep -v '^#' /etc/vn-firewall/config.env | sed '/^$/d'
+    grep -v '^#' /etc/vn-firewall/config.env | sed '/^$/d' | sed -E 's#(://[^:/@]+:)[^@]+@#\1***@#'
 fi
 echo "--- IPv4 INPUT jump rule ---"
 iptables -L INPUT -vn --line-numbers | grep -E 'num|VN_GEOIP_INPUT' || echo "  (Chưa kích hoạt)"

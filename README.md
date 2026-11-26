@@ -78,6 +78,15 @@ sudo bash setup-security.sh --mode all --public-tcp 80,443
 > ```
 > *(Mỗi user đều phải tồn tại trên hệ thống và có sẵn SSH Public Key trong `~/.ssh/authorized_keys`. Danh sách chấp nhận ngăn cách bằng dấu phẩy hoặc khoảng trắng.)*
 
+> **Cấu hình Proxy (khi server bị chặn chiều OUTPUT ra Internet)**:
+> ```bash
+> # Hỗ trợ HTTP, HTTPS, SOCKS5 (có hoặc không có user:pass):
+> sudo bash setup-security.sh --mode ssh --proxy http://10.0.0.10:3128
+> sudo bash setup-security.sh --mode ssh --proxy http://user:pass@10.0.0.10:3128
+> sudo bash setup-security.sh --mode ssh --proxy socks5h://10.0.0.10:1080
+> ```
+> *(Cấu hình proxy được lưu tại `PROXY_URL` trong `/etc/vn-firewall/config.env` với quyền `600`, được dùng chung cho cả `apt-get`, `update-vn-ipset.sh` và lịch tự động cập nhật hàng tuần `vn-ipset-update.timer`.)*
+
 ### Xác nhận an toàn (120 giây)
 Khi script áp dụng firewall và hiển thị thông báo chờ xác nhận:
 1. **Giữ nguyên** cửa sổ SSH hiện tại.
@@ -93,9 +102,9 @@ Tất cả script quản lý được cài sẵn vào `/usr/local/sbin/`:
 | Mục đích | Lệnh |
 |---|---|
 | Xem trạng thái tổng quan (SSH, GeoIP, counters, Fail2ban, timer) | `sudo status-security.sh` |
-| Thêm IP ngoại lệ (khi dùng VPN / đi công tác nước ngoài) | `echo "1.2.3.4" \| sudo tee -a /etc/vn-firewall/whitelist.txt && sudo update-vn-ipset.sh` |
-| Chuyển chế độ lọc (`ssh` ↔ `all` hoặc sửa `PUBLIC_TCP_PORTS`) | Sửa `/etc/vn-firewall/config.env` rồi chạy `sudo apply-vn-firewall.sh` |
-| Cập nhật thủ công danh sách IP Việt Nam ngay lập tức | `sudo update-vn-ipset.sh` |
+| Thêm IP ngoại lệ (khi dùng VPN / đi công tác nước ngoài) | `echo "1.2.3.4" \| sudo tee -a /etc/vn-firewall/whitelist.txt && sudo update-vn-ipset.sh --whitelist-only` |
+| Chuyển chế độ lọc (`ssh` ↔ `all`, sửa `PUBLIC_TCP_PORTS` hoặc `PROXY_URL`) | Sửa `/etc/vn-firewall/config.env` rồi chạy `sudo apply-vn-firewall.sh` |
+| Cập nhật thủ công danh sách IP Việt Nam ngay lập tức (dùng proxy nếu đã cấu hình) | `sudo update-vn-ipset.sh` |
 | Gỡ ban một IP trong Fail2ban | `sudo fail2ban-client set sshd unbanip <IP>` |
 | Tắt khẩn cấp GeoIP Firewall | `sudo rollback-vn-firewall.sh` |
 | Bật lại GeoIP Firewall | `sudo apply-vn-firewall.sh` |

@@ -11,6 +11,7 @@
 #   sudo bash setup-security.sh --mode all --public-tcp 80,443   (chặn tất cả trừ port 80,443 mở toàn cầu)
 #   sudo bash setup-security.sh --users "ubuntu,admin,devops"    (đặt lại danh sách user được phép SSH)
 #   sudo bash setup-security.sh --add-users "user_moi"           (nối thêm user mới, giữ nguyên các user cũ)
+#   sudo bash setup-security.sh --proxy http://10.0.0.10:3128    (tải danh sách IP VN & gói apt qua proxy)
 #   sudo bash setup-security.sh --no-confirm                     (bỏ qua bước đợi xác nhận 120s)
 set -euo pipefail
 
@@ -21,6 +22,10 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SSHD_HARDENING_FILE="/etc/ssh/sshd_config.d/99-hardening.conf"
+CONFIG_DIR="/etc/vn-firewall"
+CONFIG_FILE="${CONFIG_DIR}/config.env"
+WHITELIST_FILE="${CONFIG_DIR}/whitelist.txt"
+
 DEFAULT_USER="${SUDO_USER:-ubuntu}"
 [[ "$DEFAULT_USER" == "root" ]] && DEFAULT_USER="ubuntu"
 SSH_USERS_RAW="${SSH_USERS:-${SSH_USER:-}}"
@@ -28,7 +33,13 @@ ADD_USERS_RAW=""
 GEOIP_MODE="all"
 PUBLIC_TCP_PORTS=""
 PUBLIC_UDP_PORTS=""
+PROXY_URL="${PROXY_URL:-}"
 NO_CONFIRM=false
+
+# Giữ lại PROXY_URL cũ nếu đã cấu hình trước đó và không truyền mới
+if [[ -z "$PROXY_URL" && -f "$CONFIG_FILE" ]]; then
+    PROXY_URL="$(awk -F= '/^PROXY_URL=/ {sub(/^PROXY_URL=/, ""); gsub(/^"|"$/, ""); print}' "$CONFIG_FILE" 2>/dev/null || true)"
+fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -50,6 +61,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --public-udp)
             PUBLIC_UDP_PORTS="${2:-}"
+            shift 2
+            ;;
+        --proxy)
+            PROXY_URL="${2:-}"
             shift 2
             ;;
         --no-confirm)
@@ -92,10 +107,6 @@ if [[ -z "$SSH_USERS_NORM" ]]; then
     exit 1
 fi
 read -r -a ALLOW_USERS_ARR <<< "$SSH_USERS_NORM"
-
-CONFIG_DIR="/etc/vn-firewall"
-CONFIG_FILE="${CONFIG_DIR}/config.env"
-WHITELIST_FILE="${CONFIG_DIR}/whitelist.txt"
 
 echo "================================================================"
 echo "  TRIỂN KHAI BẢO MẬT SERVER: SSH HARDENING + GEOIP VN + FAIL2BAN"
@@ -157,8 +168,12 @@ fi
 echo
 echo "[1/5] Cài đặt gói ipset, iptables, curl, fail2ban..."
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq ipset iptables curl fail2ban
+APT_PROXY_OPTS=()
+if [[ -n "$PROXY_URL" ]]; then
+    APT_PROXY_OPTS+=(-o "Acquire::http::Proxy=${PROXY_URL}" -o "Acquire::https::Proxy=${PROXY_URL}")
+fi
+apt-get "${APT_PROXY_OPTS[@]}" update -qq
+apt-get "${APT_PROXY_OPTS[@]}" install -y -qq ipset iptables curl fail2ban
 
 # 2. Cài đặt scripts vào /usr/local/sbin
 echo
@@ -236,7 +251,10 @@ GEOIP_MODE="${GEOIP_MODE}"
 SSH_PORT="22"
 PUBLIC_TCP_PORTS="${PUBLIC_TCP_PORTS}"
 PUBLIC_UDP_PORTS="${PUBLIC_UDP_PORTS}"
+# Proxy tải danh sách IP Việt Nam (hỗ trợ http://, https://, socks5h://; để trống nếu kết nối trực tiếp)
+PROXY_URL="${PROXY_URL}"
 EOF
+chmod 600 "$CONFIG_FILE"
 
 /usr/local/sbin/update-vn-ipset.sh
 

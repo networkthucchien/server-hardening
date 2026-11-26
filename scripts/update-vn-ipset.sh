@@ -1,10 +1,42 @@
 #!/usr/bin/env bash
 # Cập nhật danh sách dải IP Việt Nam (IPv4 & IPv6) vào ipset theo cơ chế atomic swap (không gián đoạn).
+# Hỗ trợ tải qua proxy (HTTP/HTTPS/SOCKS5) cấu hình trong /etc/vn-firewall/config.env hoặc qua --proxy.
+#
+# Cách chạy:
+#   sudo update-vn-ipset.sh
+#   sudo update-vn-ipset.sh --proxy http://10.0.0.10:3128
+#   sudo update-vn-ipset.sh --whitelist-only   (chỉ cập nhật whitelist.txt, không cần Internet)
 set -euo pipefail
 
 CONFIG_DIR="/etc/vn-firewall"
+CONFIG_FILE="${CONFIG_DIR}/config.env"
 WHITELIST_FILE="${CONFIG_DIR}/whitelist.txt"
 IPSET_SAVE_FILE="${CONFIG_DIR}/ipset.rules"
+
+PROXY_URL="${PROXY_URL:-}"
+WHITELIST_ONLY=false
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+fi
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --proxy)
+            PROXY_URL="${2:-}"
+            shift 2
+            ;;
+        --whitelist-only)
+            WHITELIST_ONLY=true
+            shift
+            ;;
+        *)
+            echo "Tham số không hợp lệ: $1"
+            exit 1
+            ;;
+    esac
+done
 
 VN_V4_SET="vn_allow_v4"
 VN_V6_SET="vn_allow_v6"
@@ -21,12 +53,25 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
+mask_proxy() {
+    echo "$1" | sed -E 's#(://[^:/@]+:)[^@]+@#\1***@#'
+}
+
 fetch_with_fallback() {
     local out_file="$1"
     shift
+    local curl_args=(-fsSL --connect-timeout 15 --max-time 60)
+    if [[ -n "$PROXY_URL" ]]; then
+        curl_args+=(--proxy "$PROXY_URL")
+    fi
+
     for url in "$@"; do
-        log "Đang tải danh sách IP từ: $url"
-        if curl -fsSL --connect-timeout 15 --max-time 60 "$url" -o "$out_file"; then
+        if [[ -n "$PROXY_URL" ]]; then
+            log "Đang tải danh sách IP từ: $url (qua proxy $(mask_proxy "$PROXY_URL"))"
+        else
+            log "Đang tải danh sách IP từ: $url"
+        fi
+        if curl "${curl_args[@]}" "$url" -o "$out_file"; then
             if [[ -s "$out_file" ]]; then
                 return 0
             fi
@@ -99,23 +144,25 @@ update_admin_whitelist() {
     log "Đã cập nhật whitelist quản trị từ $WHITELIST_FILE."
 }
 
-# 1. Cập nhật IPv4 Việt Nam (bắt buộc)
-V4_RAW="${TMP_DIR}/vn_v4.zone"
-fetch_with_fallback "$V4_RAW" \
-    "https://www.ipdeny.com/ipblocks/data/aggregated/vn-aggregated.zone" \
-    "https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/master/ipv4/vn.cidr"
+if [[ "$WHITELIST_ONLY" == "false" ]]; then
+    # 1. Cập nhật IPv4 Việt Nam (bắt buộc)
+    V4_RAW="${TMP_DIR}/vn_v4.zone"
+    fetch_with_fallback "$V4_RAW" \
+        "https://www.ipdeny.com/ipblocks/data/aggregated/vn-aggregated.zone" \
+        "https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/master/ipv4/vn.cidr"
 
-update_ipset_from_file "$VN_V4_SET" "inet" "$V4_RAW" 200
+    update_ipset_from_file "$VN_V4_SET" "inet" "$V4_RAW" 200
 
-# 2. Cập nhật IPv6 Việt Nam (không làm fail toàn bộ nếu nguồn IPv6 tạm lỗi)
-V6_RAW="${TMP_DIR}/vn_v6.zone"
-if fetch_with_fallback "$V6_RAW" \
-    "https://www.ipdeny.com/ipv6/ipaddresses/aggregated/vn-aggregated.zone" \
-    "https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/master/ipv6/vn.cidr"; then
-    update_ipset_from_file "$VN_V6_SET" "inet6" "$V6_RAW" 20 || true
-else
-    log "Cảnh báo: Không tải được danh sách IPv6 VN, giữ nguyên ipset hiện có."
-    ipset create "$VN_V6_SET" hash:net family inet6 maxelem 65536 -exist
+    # 2. Cập nhật IPv6 Việt Nam (không làm fail toàn bộ nếu nguồn IPv6 tạm lỗi)
+    V6_RAW="${TMP_DIR}/vn_v6.zone"
+    if fetch_with_fallback "$V6_RAW" \
+        "https://www.ipdeny.com/ipv6/ipaddresses/aggregated/vn-aggregated.zone" \
+        "https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/master/ipv6/vn.cidr"; then
+        update_ipset_from_file "$VN_V6_SET" "inet6" "$V6_RAW" 20 || true
+    else
+        log "Cảnh báo: Không tải được danh sách IPv6 VN, giữ nguyên ipset hiện có."
+        ipset create "$VN_V6_SET" hash:net family inet6 maxelem 65536 -exist
+    fi
 fi
 
 # 3. Cập nhật Admin Whitelist
