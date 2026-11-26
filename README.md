@@ -68,10 +68,15 @@ sudo bash setup-security.sh --mode all
 sudo bash setup-security.sh --mode all --public-tcp 80,443
 ```
 
-> **Nếu user SSH không phải `ubuntu`**, truyền biến môi trường `SSH_USER`:
+> **Cấu hình một hoặc nhiều user được phép SSH** (mặc định tự nhận user hiện tại đang chạy `sudo`, hoặc giữ nguyên danh sách cũ nếu chạy lại):
 > ```bash
-> sudo SSH_USER=ten_user bash setup-security.sh --mode ssh
+> # Đặt danh sách user được phép SSH (ghi đè danh sách cũ):
+> sudo bash setup-security.sh --mode ssh --users "ubuntu,admin,devops"
+>
+> # Nối thêm user mới mà GIỮ NGUYÊN toàn bộ các user đã cấu hình trước đó:
+> sudo bash setup-security.sh --mode ssh --add-users "user_moi"
 > ```
+> *(Mỗi user đều phải tồn tại trên hệ thống và có sẵn SSH Public Key trong `~/.ssh/authorized_keys`. Danh sách chấp nhận ngăn cách bằng dấu phẩy hoặc khoảng trắng.)*
 
 ### Xác nhận an toàn (120 giây)
 Khi script áp dụng firewall và hiển thị thông báo chờ xác nhận:

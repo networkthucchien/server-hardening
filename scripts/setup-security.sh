@@ -6,10 +6,12 @@
 #   4. Cơ chế tự rollback sau 120 giây nếu mất kết nối SSH khi áp dụng lần đầu
 #
 # Cách chạy:
-#   sudo bash setup-security.sh                            (mặc định: chặn IP ngoài VN cho TẤT CẢ dịch vụ)
-#   sudo bash setup-security.sh --mode ssh                 (chỉ chặn IP ngoài VN cho SSH port 22, các dịch vụ khác allow all)
-#   sudo bash setup-security.sh --mode all --public-tcp 80,443  (chặn tất cả trừ port 80,443 mở toàn cầu)
-#   sudo bash setup-security.sh --no-confirm               (bỏ qua bước đợi xác nhận 120s)
+#   sudo bash setup-security.sh                                  (mặc định: chặn IP ngoài VN cho TẤT CẢ dịch vụ)
+#   sudo bash setup-security.sh --mode ssh                       (chỉ chặn IP ngoài VN cho SSH port 22, các dịch vụ khác allow all)
+#   sudo bash setup-security.sh --mode all --public-tcp 80,443   (chặn tất cả trừ port 80,443 mở toàn cầu)
+#   sudo bash setup-security.sh --users "ubuntu,admin,devops"    (đặt lại danh sách user được phép SSH)
+#   sudo bash setup-security.sh --add-users "user_moi"           (nối thêm user mới, giữ nguyên các user cũ)
+#   sudo bash setup-security.sh --no-confirm                     (bỏ qua bước đợi xác nhận 120s)
 set -euo pipefail
 
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
@@ -18,7 +20,11 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SSH_USER="${SSH_USER:-ubuntu}"
+SSHD_HARDENING_FILE="/etc/ssh/sshd_config.d/99-hardening.conf"
+DEFAULT_USER="${SUDO_USER:-ubuntu}"
+[[ "$DEFAULT_USER" == "root" ]] && DEFAULT_USER="ubuntu"
+SSH_USERS_RAW="${SSH_USERS:-${SSH_USER:-}}"
+ADD_USERS_RAW=""
 GEOIP_MODE="all"
 PUBLIC_TCP_PORTS=""
 PUBLIC_UDP_PORTS=""
@@ -28,6 +34,14 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --mode)
             GEOIP_MODE="${2:-}"
+            shift 2
+            ;;
+        --users)
+            SSH_USERS_RAW="${2:-}"
+            shift 2
+            ;;
+        --add-users)
+            ADD_USERS_RAW="${2:-}"
             shift 2
             ;;
         --public-tcp)
@@ -54,6 +68,31 @@ if [[ "$GEOIP_MODE" != "all" && "$GEOIP_MODE" != "ssh" ]]; then
     exit 1
 fi
 
+# Đọc danh sách AllowUsers hiện có (nếu đã từng cài trước đó)
+EXISTING_USERS=""
+if [[ -f "$SSHD_HARDENING_FILE" ]]; then
+    EXISTING_USERS="$(awk '/^AllowUsers[[:space:]]+/ { $1=""; print $0 }' "$SSHD_HARDENING_FILE" 2>/dev/null | xargs || true)"
+fi
+
+# Xác định danh sách user cuối cùng:
+# - Nếu truyền --users: thay thế bằng danh sách mới (có thể kết hợp thêm --add-users)
+# - Nếu chỉ truyền --add-users: giữ nguyên user hiện có (hoặc DEFAULT_USER nếu lần đầu) rồi nối thêm
+# - Nếu không truyền gì: giữ nguyên user hiện có (hoặc DEFAULT_USER nếu lần đầu)
+if [[ -n "$SSH_USERS_RAW" ]]; then
+    COMBINED_USERS="${SSH_USERS_RAW} ${ADD_USERS_RAW}"
+else
+    BASE_USERS="${EXISTING_USERS:-$DEFAULT_USER}"
+    COMBINED_USERS="${BASE_USERS} ${ADD_USERS_RAW}"
+fi
+
+# Chuẩn hóa & loại bỏ trùng lặp (chấp nhận ngăn cách bằng dấu phẩy hoặc khoảng trắng)
+SSH_USERS_NORM="$(echo "$COMBINED_USERS" | tr ',' ' ' | tr ' ' '\n' | awk 'NF && !seen[$0]++' | xargs)"
+if [[ -z "$SSH_USERS_NORM" ]]; then
+    echo "[LỖI] Danh sách SSH user không được để trống."
+    exit 1
+fi
+read -r -a ALLOW_USERS_ARR <<< "$SSH_USERS_NORM"
+
 CONFIG_DIR="/etc/vn-firewall"
 CONFIG_FILE="${CONFIG_DIR}/config.env"
 WHITELIST_FILE="${CONFIG_DIR}/whitelist.txt"
@@ -62,10 +101,29 @@ echo "================================================================"
 echo "  TRIỂN KHAI BẢO MẬT SERVER: SSH HARDENING + GEOIP VN + FAIL2BAN"
 echo "================================================================"
 
-# 0. Kiểm tra an toàn trước khi chạy
-AUTH_KEYS="/home/${SSH_USER}/.ssh/authorized_keys"
-if [[ ! -s "$AUTH_KEYS" ]]; then
-    echo "[LỖI] Không tìm thấy SSH public key tại $AUTH_KEYS!"
+# 0. Kiểm tra an toàn danh sách user và SSH key trước khi chạy
+VALID_KEY_COUNT=0
+for u in "${ALLOW_USERS_ARR[@]}"; do
+    if [[ "$u" == "root" ]]; then
+        echo "[LỖI] Không nên thêm 'root' vào AllowUsers (PermitRootLogin đã bị tắt)."
+        exit 1
+    fi
+    user_home="$(getent passwd "$u" | cut -d: -f6 || true)"
+    if [[ -z "$user_home" ]]; then
+        echo "[LỖI] User '$u' không tồn tại trên hệ thống!"
+        exit 1
+    fi
+    auth_keys="${user_home}/.ssh/authorized_keys"
+    if [[ -s "$auth_keys" ]]; then
+        echo "[+] User '$u': đã có SSH public key ($auth_keys)."
+        VALID_KEY_COUNT=$((VALID_KEY_COUNT + 1))
+    else
+        echo "[!] Cảnh báo: User '$u' chưa có SSH public key tại $auth_keys (sẽ không thể SSH sau khi tắt PasswordAuthentication)."
+    fi
+done
+
+if (( VALID_KEY_COUNT == 0 )); then
+    echo "[LỖI] Không có user nào trong danh sách (${SSH_USERS_NORM}) có SSH public key!"
     echo "      Không thể tắt PasswordAuthentication vì sẽ gây mất quyền truy cập SSH."
     exit 1
 fi
@@ -112,7 +170,7 @@ install -m 755 "${SCRIPT_DIR}/status-security.sh" /usr/local/sbin/status-securit
 
 # 3. SSH Hardening
 echo
-echo "[3/5] Cấu hình SSH Hardening (chỉ user '${SSH_USER}', chỉ dùng SSH Key)..."
+echo "[3/5] Cấu hình SSH Hardening (AllowUsers: '${SSH_USERS_NORM}', chỉ dùng SSH Key)..."
 mkdir -p /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/99-hardening.conf <<EOF
 # Managed by setup-security.sh
@@ -120,7 +178,7 @@ PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
-AllowUsers ${SSH_USER}
+AllowUsers ${SSH_USERS_NORM}
 MaxAuthTries 3
 LoginGraceTime 30
 X11Forwarding no
